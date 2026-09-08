@@ -390,6 +390,7 @@ func TestHandleTownSetUserAreaSendsCompleteAreaRosterWithSelectedActorLast(t *te
 	service.onlinePlayers = newOnlinePlayerManager()
 	service.onlinePlayers.EnterArea(&onlinePlayerInfo{
 		CharacterID: 17,
+		ChannelID:   session.residentChannel.ID,
 		TownID:      38,
 		AreaID:      0,
 		PositionX:   320,

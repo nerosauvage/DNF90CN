@@ -68,7 +68,7 @@ func (s *Service) handleDungeonSelectUpperPlanned(
 			"reason", "authoritative_party_membership_unavailable")
 		return nil
 	}
-	if partyStateAtRequest.PartyID > 0 && partyStateAtRequest.UserID != session.selectedCharacterID {
+	if prepared == nil && partyStateAtRequest.PartyID > 0 && partyStateAtRequest.UserID != session.selectedCharacterID {
 		s.logGameEvent(session, "game-dungeon-select-blocked",
 			"char_id", session.selectedCharacterID,
 			"party_id", partyStateAtRequest.PartyID,

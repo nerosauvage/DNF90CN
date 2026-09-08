@@ -459,6 +459,30 @@ func TestPendingActiveDungeonReturnCommitsOnlyAfterTownSideSceneRequest(t *testi
 	}
 }
 
+func TestConfirmedDungeonReturnRepublishesChannelTownPresence(t *testing.T) {
+	service, session, _ := newBackToVillageRuntime(t)
+	service.onlinePlayers = newOnlinePlayerManager()
+	if err := service.handleDungeonBackToVillage(session, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := service.onlinePlayers.PlayerForCharacter(session.selectedCharacterID); found {
+		t.Fatal("unconfirmed dungeon return published town presence")
+	}
+
+	session.conn.(*bufferConn).write.Reset()
+	if err := service.commitPendingDungeonReturnForSceneRequest(session, "test_confirmed_return_presence"); err != nil {
+		t.Fatal(err)
+	}
+	player, found := service.onlinePlayers.PlayerForCharacter(session.selectedCharacterID)
+	if !found {
+		t.Fatal("confirmed dungeon return did not republish town presence")
+	}
+	if player.Session != session || player.ChannelID != session.residentChannel.ID ||
+		player.TownID != 7 || player.AreaID != 3 || player.PositionX != 474 || player.PositionY != 234 {
+		t.Fatalf("confirmed return presence = %+v", player)
+	}
+}
+
 func TestPendingDungeonReturnPlayerStateFailureResumesOnlyUnfinishedSuffix(t *testing.T) {
 	service, session, runtime := newBackToVillageRuntime(t)
 	if err := service.handleDungeonBackToVillage(session, nil); err != nil {

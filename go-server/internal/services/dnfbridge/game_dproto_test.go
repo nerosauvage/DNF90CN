@@ -8,12 +8,23 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"longheng.io/server/internal/modules/dnf/channelcatalog"
 	"longheng.io/server/internal/modules/dnf/dproto"
 	dnfproto "longheng.io/server/internal/modules/dnf/protocol"
 	"longheng.io/server/internal/platform/config"
 )
+
+type deadlineCaptureConn struct {
+	*bufferConn
+	writeDeadlines []time.Time
+}
+
+func (connection *deadlineCaptureConn) SetWriteDeadline(deadline time.Time) error {
+	connection.writeDeadlines = append(connection.writeDeadlines, deadline)
+	return nil
+}
 
 type testDprotoProvider struct {
 	session *testDprotoSession
@@ -83,6 +94,27 @@ func TestOptionsNormalizeGameDprotoMode(t *testing.T) {
 	t.Setenv("DNFBRIDGE_DPROTO_MODE", "unknown")
 	if got := optionsFromConfig(config.ServiceConfig{}).gameDprotoMode; got != gameDprotoModeLegacy {
 		t.Fatalf("fallback gameDprotoMode=%q", got)
+	}
+}
+
+func TestGameWireBoundsAndClearsSocketWriteDeadline(t *testing.T) {
+	connection := &deadlineCaptureConn{bufferConn: &bufferConn{}}
+	session := &gameSession{conn: connection}
+	started := time.Now()
+	if err := (&Service{}).writeGameRawPacket(session, []byte{1, 2, 3}); err != nil {
+		t.Fatal(err)
+	}
+	if len(connection.writeDeadlines) != 2 {
+		t.Fatalf("write deadline calls = %d, want arm and clear", len(connection.writeDeadlines))
+	}
+	if connection.writeDeadlines[0].Before(started.Add(gameSocketWriteTimeout - time.Second)) {
+		t.Fatalf("armed write deadline = %s, started = %s", connection.writeDeadlines[0], started)
+	}
+	if !connection.writeDeadlines[1].IsZero() {
+		t.Fatalf("write deadline was not cleared: %s", connection.writeDeadlines[1])
+	}
+	if got := connection.write.Bytes(); !bytes.Equal(got, []byte{1, 2, 3}) {
+		t.Fatalf("wire bytes = %x", got)
 	}
 }
 

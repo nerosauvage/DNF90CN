@@ -298,7 +298,9 @@ func (s *Service) handleCurrentDungeonDiscard(session *gameSession, body []byte)
 	if accountOwned {
 		key = dnfrepo.AccountSharedInventorySlotKey(request.SourceSlot)
 	}
-	err = assetOwner.MutateOwnedInventory(context.Background(), dnfdungeon.OwnedInventoryMutationCommand{
+	writeCtx, writeCancel := context.WithTimeout(context.Background(), currentDungeonPickupWriteTimeout)
+	defer writeCancel()
+	err = assetOwner.MutateOwnedInventory(writeCtx, dnfdungeon.OwnedInventoryMutationCommand{
 		AccountID:    accountID,
 		CharacterID:  characterID,
 		AccountOwned: accountOwned,

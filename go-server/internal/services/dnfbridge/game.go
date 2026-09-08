@@ -82,6 +82,7 @@ type gameSession struct {
 	postFinishLoadingPlayerStateSent        bool
 	returnTownFinishLoadingAckOnly          bool
 	confirmedDungeonReturnStatePending      bool
+	confirmedDungeonReturnTransition        currentDungeonTownTransition
 	initialTownRouteCharacterID             uint16
 	initialTownRouteStage                   currentInitialTownRouteStage
 	initialTownActorSceneSnapshotSent       bool

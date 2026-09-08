@@ -257,6 +257,7 @@ func (s *Service) sendCurrentInitialTownRoute(
 	s.publishTownPlayerPresence(&onlinePlayerInfo{
 		CharacterID: characterID,
 		AccountID:   character.AccountID,
+		ChannelID:   session.residentChannel.ID,
 		Name:        character.Name,
 		Job:         byte(numericCharacterStat(character.Job)),
 		GrowType:    byte(numericCharacterStatValue(character, "grow_type")),

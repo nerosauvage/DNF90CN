@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"longheng.io/server/internal/modules/dnf/dproto"
 	dnfproto "longheng.io/server/internal/modules/dnf/protocol"
@@ -159,6 +160,12 @@ func (s *Service) withGameWire(session *gameSession, operation func() error) err
 	}
 	session.wireMu.Lock()
 	defer session.wireMu.Unlock()
+	if err := session.conn.SetWriteDeadline(time.Now().Add(gameSocketWriteTimeout)); err != nil {
+		return fmt.Errorf("set game socket write deadline: %w", err)
+	}
+	defer func() {
+		_ = session.conn.SetWriteDeadline(time.Time{})
+	}()
 	return operation()
 }
 

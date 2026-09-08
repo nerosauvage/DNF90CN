@@ -4,6 +4,9 @@ import "time"
 
 const (
 	createWriteTimeout = 3 * time.Second
+	// Every game write runs under the per-session wire mutex. A peer that stops
+	// reading must not hold that mutex forever and stall party/town fan-out.
+	gameSocketWriteTimeout = 5 * time.Second
 	// Selected-character initialization builds several real repository
 	// snapshots before the first scene is usable. It must not share the short
 	// mutation/write deadline: a cold PVF/catalog or MySQL pool wakeup can

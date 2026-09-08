@@ -187,7 +187,7 @@ func (s *Service) handleTownSetUserArea(session *gameSession, body []byte) error
 	}
 	transitionRows := make([]currentSceneTransitionRow, 0, 1)
 	if s.onlinePlayers != nil {
-		areaPlayers := s.onlinePlayers.GetAreaPlayers(request.TownID, request.AreaID)
+		areaPlayers := s.onlinePlayers.GetAreaPlayers(session.residentChannel.ID, request.TownID, request.AreaID)
 		sort.Slice(areaPlayers, func(i, j int) bool {
 			return areaPlayers[i].CharacterID < areaPlayers[j].CharacterID
 		})
@@ -308,6 +308,7 @@ func (s *Service) handleTownSetUserArea(session *gameSession, body []byte) error
 		playerInfo := &onlinePlayerInfo{
 			CharacterID: characterID,
 			AccountID:   character.AccountID,
+			ChannelID:   session.residentChannel.ID,
 			Name:        character.Name,
 			Job:         byte(numericCharacterStat(character.Job)),
 			GrowType:    byte(numericCharacterStatValue(character, "grow_type")),

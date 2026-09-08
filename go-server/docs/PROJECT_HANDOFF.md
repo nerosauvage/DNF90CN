@@ -1,7 +1,7 @@
 # DNF90CN 服务端开发交接文档
 
 > 文档性质：权威开发交接入口
-> 覆盖基线：125a469（Redesign launcher and stabilize first character flow）
+> 覆盖基线：`fix/party-invite-authority-resync`（截至 2026-09-08 的组队/城镇/副本返回修复）
 > 适用范围：本仓库的 Go 服务端、Windows 本地控制器/登录器，以及与其配套的 90CN 客户端兼容层
 
 本文件面向已经了解 Windows、Go、TCP 和 DNF 资源格式的开发者或 AI。内容只记录当前代码能证明的边界、入口、状态和修复；完整历史仍在仓库根目录 changlog.md。
@@ -179,10 +179,26 @@ go-server/internal/services/dnfbridge/scene_finish_loading_test.go
 | df58f6b | 空角色选择器的短探测把后续普通 op4 误判为频道重连；真实重连也可能被误清 | clearUnboundChannelReconnectForRoster；GET_USERINFO op8 只清未绑定猜测，保留已选角色/场景中的重连 | channel_reconnect_test.go 覆盖空选择器和已绑定重连 |
 | 125a469 | 创建第一个角色后，非空列表之后的立即选角仍可能走旧重连分支；登录步骤繁琐、旧 EXE 不自动更新 | sendCreateSuccess 清理三类陈旧状态；重做原生登录器和 LOGIN.bat 版本刷新流程 | TestFirstCreatedCharacterClearsSpeculativeReconnectBeforeSelection；launcher/control/release 测试 |
 | 当前基线 | 首角色场景中 op3 早于房间对象管理器会崩溃/掉线 | 普通场景把对象放置置于用户状态；教程场景延后到 finish-loading | dungeon_entry_packets_test.go、scene_finish_loading_test.go 及场景时序测试 |
-| 2026-09-08 源码待真机验收 | A 邀请 B 后 B 反成队长；一端显示两名队员、另一端只显示自己；随后进图状态分裂并掉线 | 邀请绑定 inviter 的非零中央 party generation；接受时校验原 party id/leader；选图和 op16 前重放权威 roster，非队长 op16 拒绝 | game_aligned_test.go、party_manager_runtime_test.go 已补回归源码；按要求未在本机执行测试 |
-| 2026-09-08 源码待真机验收 | A、B 同频道同城镇但首次进入互相不可见，任一方重选频道后才恢复 | 首次进城和频道重连在自身 op24 完成后登记在线区域，并向新旧双方依次投影 mode0/mode1/op9/op23；SET_USER_AREA 复用同一发布入口 | online_player_manager_test.go 已补双向与单人回归源码；按要求未在本机执行测试 |
+| 2026-09-08 源码通过、待真机验收 | A 邀请 B 后 B 反成队长；一端显示两名队员、另一端只显示自己 | 邀请绑定 inviter 的非零中央 party generation；接受时校验原 party id/leader；resident promotion 保证非零 session generation；选图前从中央图重放 roster | game_aligned_test.go、party_manager_runtime_test.go、town_enter_select_test.go 在 Windows/Go 1.27.1 通过 |
+| 2026-09-08 源码通过、待真机验收 | 队长选图后 follower runtime 已提交但没有 op29，双方实际未进同一张图 | 只对真实客户端 op16 执行队长权限校验；server-prepared follower 复用已校验的队长拓扑/seed 并完成 op28/op29 | TestPartyLeaderDungeonSelectionEntersEveryOnlineMemberWithStablePartyIndex；该用例在 4caa2fa 可复现失败，修复后通过 |
+| 2026-09-08 源码通过、待真机验收 | A、B 同频道同城镇但首次进入互相不可见，任一方重选频道后才恢复 | 首次进城和频道重连在自身 op24 完成后登记在线区域；在线表按 channel/town/area 隔离；SET_USER_AREA 复用同一发布入口 | online_player_manager_test.go 的双向、单人、跨频道隔离回归在 Windows 通过 |
+| 2026-09-08 源码通过、待真机验收 | 副本返回后只有一端看到完整队伍，切频道才恢复 | 保存已确认 op24 的精确城镇 transition，角色/HUD 链完成后重新登记城镇 presence，再执行 party co-presence 重建 | TestConfirmedDungeonReturnRepublishesChannelTownPresence 及 dungeon return/party return 套件通过 |
 
 其他玩法修复（任务、背包/装备、PVF 掉落、副本、活动等）以 changlog.md 顶部条目和各模块测试为准；不要根据旧归档或旧二进制推断当前行为。
+
+当前组队/城镇权威边界：
+
+~~~text
+邀请者 session generation + central RuntimePartyManager
+  -> 邀请绑定同一 party generation 与 leader
+  -> selector fan-out 读取中央成员图
+  -> 只有真实客户端 op16 要求 requester == leader
+  -> prepared follower 复用 leader 的 dungeon topology / seed
+  -> 进图时从 channel/town/area presence 移除
+  -> 已确认返回完成 actor/HUD 后重新发布 presence
+~~~
+
+数据库性能策略仍是保留 MySQL 作为持久权威，不用换库掩盖热路径。当前提交先完成三类可验证的边界：生成 DSN 带 5 秒连接/读/写超时；aligned mutation 与 dungeon discard 有 context deadline；非 party 事务不再占用 `party.mu`。背包/任务改为真正的行级增量写、怪物结算批处理属于后续独立改造，必须先有 SQL 计数和 p95/p99 证据，不能在联机修复中顺手改 schema。
 
 ## 9. 标准排查方法
 
@@ -236,13 +252,18 @@ Windows 本地验收顺序：
 1. 安装/替换五个客户端文件
 2. LOGIN.bat
 3. 注册或登录账号，创建第一个角色并选中进入城镇
-4. 退出并重新登录，确认角色、背包和场景状态仍由 MySQL 恢复
-5. STATUS.bat 查看 ready、PID、端口和日志
+4. 双开 A/B：同频道同城镇无需切频道即可互见；A 邀请 B 后两端都显示 A 为队长
+5. 分别由 A、B 打开选图页，确认另一端同步进入；由 A 选图，确认两端同 seed、同地图且都收到 op29
+6. 通关/返回城镇后确认双方仍互见且 roster 一致；再切不同频道确认不会跨频道互见
+7. 退出并重新登录，确认角色、背包和场景状态仍由 MySQL 恢复
+8. STATUS.bat 查看 ready、PID、端口和日志
 ~~~
 
 ## 11. 未完成项与风险
 
 - 当前提交已通过源码和模拟协议回归，但首角色完整链路仍需要 Windows 真客户端验收；macOS 不代表客户端行为已通过。
+- 2026-09-08 组队/城镇修复已在 Windows/amd64 Go 1.27.1 通过 `go test -buildvcs=false -count=1 ./...`，但尚未在两台真实客户端上验证邀请、双方选图、同图 op29 和返回城镇完整链。
+- MySQL 超时只保证慢库不会无限冻结 session；它不等于数据库已经完成性能优化。若真机仍卡顿，先记录每 opcode 的 SQL 次数、事务耗时和表行数，再决定增量写/批处理，禁止直接换数据库或无证据加缓存。
 - 如果现场仍掉线，下一步是日志/最后协议证据，不是继续堆叠响应包。
 - runtime/bin 被 Git 忽略；涉及服务端或登录器二进制行为的改动必须递增 deploy/windows/runtime.version，否则旧本地 EXE 可能继续运行。
 - `runtime/bin/DNF90Build.version` 只由「当前源码的控制器构建」写入。标记缺失等价于「这批 EXE 早于标记本身」，也就必然不含 125a469 的首角色修复。`LOGIN.bat` 在任何情况下都不得替旧 EXE 补写该标记：一旦补写，陈旧运行时会被判定为最新，安装从此不再更新，首角色问题在现场会表现为「一直没修好」。

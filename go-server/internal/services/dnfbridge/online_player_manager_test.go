@@ -102,6 +102,28 @@ func TestCurrentTownRemoteActorOwnerContextUsesCommittedTownChannel(t *testing.T
 	}
 }
 
+func TestOnlinePlayerManagerSeparatesIdenticalTownAreasByChannel(t *testing.T) {
+	manager := newOnlinePlayerManager()
+	first := &onlinePlayerInfo{CharacterID: 17, ChannelID: 101, TownID: 38, AreaID: 1, Session: &gameSession{}}
+	second := &onlinePlayerInfo{CharacterID: 23, ChannelID: 102, TownID: 38, AreaID: 1, Session: &gameSession{}}
+
+	if peers := manager.EnterArea(first); len(peers) != 0 {
+		t.Fatalf("first channel unexpectedly had peers: %+v", peers)
+	}
+	if peers := manager.EnterArea(second); len(peers) != 0 {
+		t.Fatalf("cross-channel player leaked into town peers: %+v", peers)
+	}
+	if manager.PeerInSameArea(first.CharacterID, second.CharacterID) {
+		t.Fatal("identical town/area ids in different channels were treated as co-present")
+	}
+	if got := manager.GetAreaPlayers(101, 38, 1); len(got) != 1 || got[0].CharacterID != first.CharacterID {
+		t.Fatalf("channel 101 area players = %+v", got)
+	}
+	if got := manager.GetAreaPlayers(102, 38, 1); len(got) != 1 || got[0].CharacterID != second.CharacterID {
+		t.Fatalf("channel 102 area players = %+v", got)
+	}
+}
+
 func TestPublishTownPlayerPresenceRegistersAndCreatesRemoteActorsBothDirections(t *testing.T) {
 	repositories := dnfrepomemory.NewMemoryGroup()
 	for _, character := range []dnfrepo.CharacterRecord{

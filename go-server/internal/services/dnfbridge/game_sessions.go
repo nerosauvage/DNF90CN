@@ -113,6 +113,10 @@ func (s *Service) promoteResidentGameSession(session *gameSession, charID uint16
 		s.gameSessions = make(map[uint16]*gameSession)
 	}
 	previous := s.gameSessions[charID]
+	if session.characterGeneration == 0 ||
+		(previous != nil && previous != session && session.characterGeneration == previous.characterGeneration) {
+		s.allocateGameSessionCharacterGenerationLocked(session, previous)
+	}
 	s.gameSessions[charID] = session
 	s.mu.Unlock()
 	if previous != nil && previous != session {

@@ -124,6 +124,7 @@ func (s *Service) handleTownSetUserPosition(session *gameSession, body []byte) e
 		if len(others) > 0 {
 			mover := &onlinePlayerInfo{
 				CharacterID: characterID,
+				ChannelID:   session.residentChannel.ID,
 				TownID:      snapshot.TownID,
 				AreaID:      snapshot.AreaID,
 				PositionX:   request.PositionX,

@@ -153,6 +153,36 @@ func TestGameSessionCharacterLifecycleAdvancesGeneration(t *testing.T) {
 	}
 }
 
+func TestForceDetachStalledGameSessionRemovesExternalOwnership(t *testing.T) {
+	service := &Service{
+		onlinePlayers: newOnlinePlayerManager(),
+		gameSessions:  make(map[uint16]*gameSession),
+	}
+	session := &gameSession{
+		conn:                &bufferConn{},
+		selectedCharacterID: 19,
+		characterGeneration: 7,
+	}
+	service.gameSessions[19] = session
+	service.onlinePlayers.EnterArea(&onlinePlayerInfo{
+		CharacterID: 19,
+		ChannelID:   42,
+		TownID:      38,
+		AreaID:      1,
+		Session:     session,
+	})
+
+	if err := service.forceDetachStalledGameSession(session); err != nil {
+		t.Fatal(err)
+	}
+	if _, online := service.onlineGameSession(19); online {
+		t.Fatal("stalled session remained in the canonical game-session index")
+	}
+	if _, present := service.onlinePlayers.PlayerForCharacter(19); present {
+		t.Fatal("stalled session retained town presence")
+	}
+}
+
 func TestGameSessionEventsRejectTimerAfterStop(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

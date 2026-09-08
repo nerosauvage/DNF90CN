@@ -291,7 +291,7 @@ store_kind = "memory"
 
 func renderLogicConfig(cfg instanceConfig) string {
 	dsn := fmt.Sprintf(
-		"%s:%s@tcp(%s:%d)/%s?parseTime=true&charset=utf8mb4,utf8",
+		"%s:%s@tcp(%s:%d)/%s?parseTime=true&charset=utf8mb4,utf8&timeout=5s&readTimeout=5s&writeTimeout=5s",
 		cfg.Database.User,
 		cfg.Database.Password,
 		cfg.Database.Host,

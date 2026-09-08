@@ -31,6 +31,7 @@ const (
 type currentExpertJobStore struct {
 	OwnerCharacterID uint16
 	OwnerSession     *gameSession
+	ChannelID        int
 	Kind             byte
 	Name             []byte
 	Cost             int64
@@ -187,7 +188,7 @@ func (s *Service) createCurrentExpertJobStore(session *gameSession, request curr
 	if err != nil {
 		return nil, err
 	}
-	store := &currentExpertJobStore{OwnerCharacterID: session.selectedCharacterID, OwnerSession: session, Kind: request.Kind, Name: request.Name, Cost: request.Cost, TownID: player.TownID, AreaID: player.AreaID, PositionX: request.PositionX, PositionY: request.PositionY, OpaqueObjectLink: request.OpaqueObjectLink}
+	store := &currentExpertJobStore{OwnerCharacterID: session.selectedCharacterID, OwnerSession: session, ChannelID: player.ChannelID, Kind: request.Kind, Name: request.Name, Cost: request.Cost, TownID: player.TownID, AreaID: player.AreaID, PositionX: request.PositionX, PositionY: request.PositionY, OpaqueObjectLink: request.OpaqueObjectLink}
 	switch request.Kind {
 	case currentExpertJobDisjointStoreKind:
 		config, ok := catalog.Disjointer()
@@ -244,7 +245,7 @@ func (s *Service) enterCurrentExpertJobStore(session *gameSession, ownerID uint1
 	s.expertJobStoreMu.Lock()
 	defer s.expertJobStoreMu.Unlock()
 	store := s.expertJobStores[ownerID]
-	if !visitorOK || visitor.Session != session || store == nil || store.OwnerSession == nil || store.TownID != visitor.TownID || store.AreaID != visitor.AreaID {
+	if !visitorOK || visitor.Session != session || store == nil || store.OwnerSession == nil || store.ChannelID != visitor.ChannelID || store.TownID != visitor.TownID || store.AreaID != visitor.AreaID {
 		return nil, false
 	}
 	if s.expertJobVisitors == nil {
@@ -314,7 +315,7 @@ func (s *Service) broadcastCurrentExpertJobStoreClose(store *currentExpertJobSto
 		return
 	}
 	body := buildCurrentExpertJobStoreCloseNotification(store.OwnerCharacterID)
-	for _, player := range s.onlinePlayers.GetAreaPlayers(store.TownID, store.AreaID) {
+	for _, player := range s.onlinePlayers.GetAreaPlayers(store.ChannelID, store.TownID, store.AreaID) {
 		if player.Session == nil || (!includeOwner && player.CharacterID == store.OwnerCharacterID) {
 			continue
 		}
@@ -328,8 +329,9 @@ func (s *Service) replayCurrentExpertJobStores(session *gameSession, townID, are
 	}
 	s.expertJobStoreMu.Lock()
 	stores := make([]*currentExpertJobStore, 0)
+	channelID := session.residentChannel.ID
 	for _, store := range s.expertJobStores {
-		if store.TownID == townID && store.AreaID == areaID && store.OwnerSession != session {
+		if store.ChannelID == channelID && store.TownID == townID && store.AreaID == areaID && store.OwnerSession != session {
 			stores = append(stores, cloneCurrentExpertJobStore(store))
 		}
 	}
@@ -394,7 +396,7 @@ func (s *Service) broadcastCurrentExpertJobStoreUpdate(store *currentExpertJobSt
 		return
 	}
 	body := buildCurrentExpertJobStoreUpdateNotification(store)
-	for _, player := range s.onlinePlayers.GetAreaPlayers(store.TownID, store.AreaID) {
+	for _, player := range s.onlinePlayers.GetAreaPlayers(store.ChannelID, store.TownID, store.AreaID) {
 		if player.Session != nil {
 			_ = s.sendGameUpperRawClass(player.Session, currentExpertJobStoreUpdateNotification, body, 0)
 		}

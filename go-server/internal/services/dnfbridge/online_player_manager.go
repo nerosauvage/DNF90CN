@@ -15,6 +15,7 @@ import (
 type onlinePlayerInfo struct {
 	CharacterID uint16
 	AccountID   string
+	ChannelID   int
 	Name        string
 	Job         byte
 	GrowType    byte
@@ -30,12 +31,15 @@ type onlinePlayerInfo struct {
 
 // areaKey identifies a unique town area.
 type areaKey struct {
-	TownID byte
-	AreaID byte
+	ChannelID int
+	TownID    byte
+	AreaID    byte
 }
 
-// OnlinePlayerManager tracks online players grouped by (TownID, AreaID)
-// and provides broadcast capabilities for town multiplayer visibility.
+// OnlinePlayerManager tracks online players grouped by (ChannelID, TownID,
+// AreaID) and provides town multiplayer broadcasts. Town actors are
+// channel-local; merging equal town/area ids from two game ports leaks
+// presence, invitations, and expert-job stores across channels.
 type OnlinePlayerManager struct {
 	mu     sync.RWMutex
 	byArea map[areaKey]map[uint16]*onlinePlayerInfo // areaKey -> characterID -> info
@@ -58,7 +62,10 @@ func (m *OnlinePlayerManager) EnterArea(info *onlinePlayerInfo) []onlinePlayerIn
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	key := areaKey{TownID: info.TownID, AreaID: info.AreaID}
+	if info.Session != nil && info.Session.residentChannel.ID > 0 {
+		info.ChannelID = info.Session.residentChannel.ID
+	}
+	key := areaKey{ChannelID: info.ChannelID, TownID: info.TownID, AreaID: info.AreaID}
 
 	// Remove from previous area if any.
 	m.removeFromAreaLocked(info.CharacterID)
@@ -196,14 +203,14 @@ func (m *OnlinePlayerManager) UpdatePosition(characterID uint16, posX, posY uint
 }
 
 // GetAreaPlayers returns all players in a specific area.
-func (m *OnlinePlayerManager) GetAreaPlayers(townID, areaID byte) []onlinePlayerInfo {
+func (m *OnlinePlayerManager) GetAreaPlayers(channelID int, townID, areaID byte) []onlinePlayerInfo {
 	if m == nil {
 		return nil
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	key := areaKey{TownID: townID, AreaID: areaID}
+	key := areaKey{ChannelID: channelID, TownID: townID, AreaID: areaID}
 	players := make([]onlinePlayerInfo, 0, len(m.byArea[key]))
 	for _, info := range m.byArea[key] {
 		players = append(players, *info)
@@ -465,15 +472,14 @@ func (s *Service) broadcastTownPlayerEnter(newPlayer *onlinePlayerInfo, others [
 			*newPlayer,
 			"town_copresence_actor_state_newcomer_to_existing",
 		); err != nil {
-			s.logGameEvent(peers[i].Session, "game-town-copresence-actor-state-failed",
-				"source", "town_copresence_actor_state_newcomer_to_existing",
-				"actor_char_id", newPlayer.CharacterID,
-				"error", err)
+			s.failTownProjection(peers[i].Session, "town_copresence_actor_state_newcomer_to_existing", newPlayer.CharacterID, err)
 			continue
 		}
-		_ = s.sendCurrentSceneFixedClass0Packet(peers[i].Session,
+		if err := s.sendCurrentSceneFixedClass0Packet(peers[i].Session,
 			currentTownUserAreaNotificationMsgID, enterBody,
-			"town_copresence_enter_0x0017_to_existing")
+			"town_copresence_enter_0x0017_to_existing"); err != nil {
+			s.failTownProjection(peers[i].Session, "town_copresence_enter_0x0017_to_existing", newPlayer.CharacterID, err)
+		}
 	}
 
 	// To newcomer: each existing player's mode0/mode1/op9, then 0x0017.
@@ -486,10 +492,7 @@ func (s *Service) broadcastTownPlayerEnter(newPlayer *onlinePlayerInfo, others [
 			peers[i],
 			"town_copresence_actor_state_existing_to_newcomer",
 		); err != nil {
-			s.logGameEvent(newPlayer.Session, "game-town-copresence-actor-state-failed",
-				"source", "town_copresence_actor_state_existing_to_newcomer",
-				"actor_char_id", peers[i].CharacterID,
-				"error", err)
+			s.failTownProjection(newPlayer.Session, "town_copresence_actor_state_existing_to_newcomer", peers[i].CharacterID, err)
 			continue
 		}
 		otherKey := currentSceneActorObjectKey(peers[i].CharacterID)
@@ -498,9 +501,29 @@ func (s *Service) broadcastTownPlayerEnter(newPlayer *onlinePlayerInfo, others [
 			peers[i].PositionX, peers[i].PositionY,
 			peers[i].Direction, peers[i].AreaState,
 		)
-		_ = s.sendCurrentSceneFixedClass0Packet(newPlayer.Session,
+		if err := s.sendCurrentSceneFixedClass0Packet(newPlayer.Session,
 			currentTownUserAreaNotificationMsgID, otherBody,
-			"town_copresence_enter_0x0017_existing_to_newcomer")
+			"town_copresence_enter_0x0017_existing_to_newcomer"); err != nil {
+			s.failTownProjection(newPlayer.Session, "town_copresence_enter_0x0017_existing_to_newcomer", peers[i].CharacterID, err)
+		}
+	}
+}
+
+// failTownProjection closes a session whose scene projection is incomplete.
+// Keeping that socket alive leaves the two clients with different actor sets;
+// reconnect is the only protocol-safe full resynchronization currently owned
+// by the bridge.
+func (s *Service) failTownProjection(session *gameSession, source string, actorCharacterID uint16, err error) {
+	if s == nil || session == nil || err == nil {
+		return
+	}
+	s.logGameEvent(session, "game-town-projection-failed",
+		"source", source,
+		"actor_char_id", actorCharacterID,
+		"error", err,
+		"recovery", "close_incomplete_scene_for_clean_reconnect")
+	if session.conn != nil {
+		_ = session.conn.Close()
 	}
 }
 
@@ -521,6 +544,7 @@ func (s *Service) publishTownPlayerPresence(player *onlinePlayerInfo, source str
 	s.logGameEvent(player.Session, "game-town-presence-published",
 		"source", source,
 		"char_id", player.CharacterID,
+		"channel_id", player.ChannelID,
 		"town_id", player.TownID,
 		"area_id", player.AreaID,
 		"peer_count", len(others))
@@ -579,9 +603,11 @@ func (s *Service) broadcastTownPlayerLeave(characterID uint16, others []onlinePl
 	leaveBody := buildTownUserLeaveBody(characterID)
 	for i := range others {
 		if others[i].Session != nil {
-			_ = s.sendCurrentSceneFixedClass0Packet(others[i].Session,
+			if err := s.sendCurrentSceneFixedClass0Packet(others[i].Session,
 				currentTownUserLeaveMsgID, leaveBody,
-				"town_copresence_leave_0x0006")
+				"town_copresence_leave_0x0006"); err != nil {
+				s.failTownProjection(others[i].Session, "town_copresence_leave_0x0006", characterID, err)
+			}
 		}
 	}
 }
@@ -627,20 +653,24 @@ func (s *Service) broadcastTownPlayerAreaChange(
 		_, sameAuthoritativeParty := partyMembers[oldOthers[i].CharacterID]
 		peerState := runtimePartyStateSnapshot(peer)
 		if sameAuthoritativeParty && peerState.PartyID == state.PartyID {
-			_ = s.sendCurrentSceneFixedClass0Packet(
+			if err := s.sendCurrentSceneFixedClass0Packet(
 				peer,
 				currentTownUserAreaNotificationMsgID,
 				areaBody,
 				"town_party_member_area_change_0x0017",
-			)
+			); err != nil {
+				s.failTownProjection(peer, "town_party_member_area_change_0x0017", mover.CharacterID, err)
+			}
 			continue
 		}
-		_ = s.sendCurrentSceneFixedClass0Packet(
+		if err := s.sendCurrentSceneFixedClass0Packet(
 			peer,
 			currentTownUserLeaveMsgID,
 			leaveBody,
 			"town_copresence_leave_0x0006",
-		)
+		); err != nil {
+			s.failTownProjection(peer, "town_copresence_leave_0x0006", mover.CharacterID, err)
+		}
 	}
 }
 
@@ -656,9 +686,11 @@ func (s *Service) broadcastTownPlayerMove(mover *onlinePlayerInfo, others []onli
 	)
 	for i := range others {
 		if others[i].Session != nil {
-			_ = s.sendCurrentSceneFixedClass0Packet(others[i].Session,
+			if err := s.sendCurrentSceneFixedClass0Packet(others[i].Session,
 				currentTownUserPositionNotificationMsgID, moveBody,
-				"town_copresence_move_0x0016")
+				"town_copresence_move_0x0016"); err != nil {
+				s.failTownProjection(others[i].Session, "town_copresence_move_0x0016", mover.CharacterID, err)
+			}
 		}
 	}
 }

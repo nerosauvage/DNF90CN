@@ -77,6 +77,9 @@ func TestPartyLeaderDungeonSelectionEntersEveryOnlineMemberWithStablePartyIndex(
 	if index, ok := runtimePartyMemberIndexForSession(leader); !ok || index != 0 {
 		t.Fatalf("leader party index before dungeon entry=%d ok=%t", index, ok)
 	}
+	if !service.onlinePlayers.PeerInSameArea(leader.selectedCharacterID, follower.selectedCharacterID) {
+		t.Fatal("party fixture members are not co-present")
+	}
 
 	body := make([]byte, dungeoncmd.SelectDungeonRequestSize)
 	binary.LittleEndian.PutUint32(body[:4], 700)
@@ -478,16 +481,16 @@ func TestBuildCurrentDungeonEntryPacketsRejectsUnownedState(t *testing.T) {
 		coordinate := worldmap.RoomCoordinate{X: 0, Y: 0}
 		room := &runtimeDungeonRoom{coordinate: coordinate, mapID: 100}
 		return &runtimeDungeonState{
-				Request:        dungeoncmd.SelectDungeonRequest{DungeonID: 700},
-				Dungeon:        worldmap.Dungeon{ID: 700, Mazes: []worldmap.Maze{{}}},
-				Session:        &worldmap.DungeonSession{},
-				Room:           room,
-				BossCoordinate: coordinate,
-				BossSet:        true,
-			}, worldmap.DungeonRoomScene{
-				Coordinate: coordinate,
-				Map:        worldmap.ResolvedMap{Map: worldmap.Map{ID: 100}},
-			}
+			Request:        dungeoncmd.SelectDungeonRequest{DungeonID: 700},
+			Dungeon:        worldmap.Dungeon{ID: 700, Mazes: []worldmap.Maze{{}}},
+			Session:        &worldmap.DungeonSession{},
+			Room:           room,
+			BossCoordinate: coordinate,
+			BossSet:        true,
+		}, worldmap.DungeonRoomScene{
+			Coordinate: coordinate,
+			Map:        worldmap.ResolvedMap{Map: worldmap.Map{ID: 100}},
+		}
 	}
 	tests := []struct {
 		name   string

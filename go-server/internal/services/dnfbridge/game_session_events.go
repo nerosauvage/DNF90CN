@@ -198,8 +198,12 @@ func (s *Service) shutdownGameSessionEvents(session *gameSession, closeDproto bo
 	}
 	cleanupErr := s.callGameSession(ctx, session, "game-session-shutdown", cleanup)
 	stopErr := s.stopGameSessionEvents(ctx, session)
-	if !cleanupCompleted.Load() && stopErr == nil {
-		cleanupErr = errors.Join(cleanupErr, cleanup())
+	if !cleanupCompleted.Load() {
+		if stopErr == nil {
+			cleanupErr = errors.Join(cleanupErr, cleanup())
+		} else {
+			cleanupErr = errors.Join(cleanupErr, s.forceDetachStalledGameSession(session))
+		}
 	}
 	if cleanupErr != nil || stopErr != nil {
 		s.logGameEvent(session, "game-session-events-shutdown-failed",
@@ -209,6 +213,55 @@ func (s *Service) shutdownGameSessionEvents(session *gameSession, closeDproto bo
 	}
 	s.logGameEvent(session, "game-session-events-stopped",
 		"character_generation", session.characterGeneration)
+}
+
+// forceDetachStalledGameSession removes the externally visible ownership that
+// must not survive a wedged event handler. It deliberately avoids session
+// party/dungeon/wire mutexes: one of those locks may be exactly why normal
+// cleanup could not enter the queue. The ordinary queued cleanup remains
+// idempotent and can finish timers/DPROTO state if the handler later returns.
+func (s *Service) forceDetachStalledGameSession(session *gameSession) error {
+	if s == nil || session == nil {
+		return nil
+	}
+	if session.conn != nil {
+		_ = session.conn.Close()
+	}
+	characterID := session.selectedCharacterID
+	if characterID == 0 {
+		return nil
+	}
+	if s.onlinePlayers != nil {
+		_, peers, removed := s.onlinePlayers.LeaveAreaSession(characterID, session)
+		if removed {
+			s.broadcastTownPlayerLeave(characterID, peers)
+		}
+	}
+	identity, bound := s.boundGameSessionCharacterSnapshot(session)
+	if bound {
+		if manager := s.runtimePartyManagerForService(); manager != nil {
+			result := manager.Leave(identity.character, identity.generation)
+			if result.OK {
+				if result.Retired != nil {
+					s.closeRuntimePartyUDPRelay(int(result.Retired.ID))
+				}
+				if result.Party.ID > 0 {
+					nextState := s.publishRuntimePartyMembershipSnapshot(result.Party)
+					s.syncRuntimePartyUDPRelay(nextState)
+				}
+			}
+		}
+	}
+	s.mu.Lock()
+	if s.gameSessions[characterID] == session {
+		delete(s.gameSessions, characterID)
+	}
+	s.mu.Unlock()
+	s.logGameEvent(session, "game-session-force-detached",
+		"char_id", characterID,
+		"reason", "event_loop_shutdown_timeout",
+		"scope", "socket_town_presence_party_manager_session_index")
+	return nil
 }
 
 func advanceGameSessionCharacterGeneration(session *gameSession) uint64 {

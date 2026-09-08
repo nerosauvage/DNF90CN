@@ -255,6 +255,11 @@ func TestPortableTemplateAndLogicConfigExcludeRedisAndDocker(t *testing.T) {
 	if !strings.Contains(logic, "mysql_dsn") {
 		t.Fatalf("logic config is missing the MySQL repository DSN:\n%s", logic)
 	}
+	for _, required := range []string{"timeout=5s", "readtimeout=5s", "writetimeout=5s"} {
+		if !strings.Contains(logic, required) {
+			t.Fatalf("logic config MySQL DSN is missing %q:\n%s", required, logic)
+		}
+	}
 }
 
 func TestReadPortableMySQLServerUUID(t *testing.T) {

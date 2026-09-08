@@ -67,6 +67,8 @@ func (s *Service) handleAlignedGameCommand(session *gameSession, cmd byte, typ u
 	}
 	repos, _ := s.repositoryGroup()
 	accountID := s.accountIDForSession(session)
+	routeCtx, routeCancel := context.WithTimeout(context.Background(), createWriteTimeout)
+	defer routeCancel()
 	if dnfenum.CmdPacket(typ) == dnfenum.CmdPacketMailboxOpen {
 		s.reconcileCurrentJoustSettlementMailBeforeOpen(session)
 	}
@@ -76,7 +78,7 @@ func (s *Service) handleAlignedGameCommand(session *gameSession, cmd byte, typ u
 	var equipmentPlacement alignedcmd.EquipmentPlacementValidator
 	var petHatchResolver alignedcmd.PetHatchResolver
 	if alignedSkillOwnerRulesRequired(dnfenum.CmdPacket(typ)) {
-		skillCatalog, initialSkillLevels, skillPointBaseline = s.skillOwnerRules(context.Background(), repos, session.selectedCharacterID)
+		skillCatalog, initialSkillLevels, skillPointBaseline = s.skillOwnerRules(routeCtx, repos, session.selectedCharacterID)
 	}
 	petHatchResolver, petCatalogErr := s.alignedPetHatchResolverForCommand(dnfenum.CmdPacket(typ))
 	if petCatalogErr != nil {
@@ -255,8 +257,7 @@ func (s *Service) handleAlignedGameCommand(session *gameSession, cmd byte, typ u
 			}
 		}
 	}
-	session.party.mu.Lock()
-	result, ok, err := gameAlignedRegistry.Route(context.Background(), alignedcmd.Request{
+	request := alignedcmd.Request{
 		Command:                    cmd,
 		CommandKnown:               true,
 		Opcode:                     typ,
@@ -283,9 +284,20 @@ func (s *Service) handleAlignedGameCommand(session *gameSession, cmd byte, typ u
 		SkillCatalog:               skillCatalog,
 		InitialSkillLevels:         initialSkillLevels,
 		SkillPointBaseline:         skillPointBaseline,
-		Party:                      &session.party.state,
-	})
-	session.party.mu.Unlock()
+	}
+	var (
+		result alignedcmd.Result
+		ok     bool
+		err    error
+	)
+	if alignedCommandUsesPartyState(dnfenum.CmdPacket(typ)) {
+		session.party.mu.Lock()
+		request.Party = &session.party.state
+		result, ok, err = gameAlignedRegistry.Route(routeCtx, request)
+		session.party.mu.Unlock()
+	} else {
+		result, ok, err = gameAlignedRegistry.Route(routeCtx, request)
+	}
 	if err != nil || !ok {
 		return ok, err
 	}
@@ -370,6 +382,27 @@ func (s *Service) handleAlignedGameCommand(session *gameSession, cmd byte, typ u
 		return true, nil
 	default:
 		return false, nil
+	}
+}
+
+// alignedCommandUsesPartyState keeps the mutable per-session party projection
+// out of unrelated repository commands. Previously every inventory, quest,
+// mail, and skill transaction held party.mu for its full SQL round trip,
+// turning one slow database call into a party/dungeon coordination stall.
+func alignedCommandUsesPartyState(opcode dnfenum.CmdPacket) bool {
+	switch opcode {
+	case dnfenum.CmdPacketSetPartyInfo,
+		dnfenum.CmdPacketLeaveParty,
+		dnfenum.CmdPacketCallPartyMemberRealtimeInfo,
+		dnfenum.CmdPacketRegisterQuickParty,
+		dnfenum.CmdPacketCancelQuickParty,
+		dnfenum.CmdPacketDirectEntranceDungeonQuickParty,
+		dnfenum.CmdPacketReserveLeaveParty,
+		dnfenum.CmdPacketEntryIntoParty,
+		dnfenum.CmdPacketEntryIntoPartyFinish:
+		return true
+	default:
+		return false
 	}
 }
 

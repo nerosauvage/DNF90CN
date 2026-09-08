@@ -3,6 +3,7 @@ package dnfbridge
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"longheng.io/server/internal/modules/dnf/dnfenum"
 	"longheng.io/server/internal/modules/dnf/worldmap"
@@ -18,6 +19,55 @@ type currentDungeonTownTransition struct {
 	AreaState      byte
 	PositionSource string
 	Body           []byte
+}
+
+// publishConfirmedDungeonReturnTownPresence re-enters the authoritative
+// channel/town/area registry after dungeon entry removed the old town actor.
+// Without this boundary the returning client can render its own party member
+// while the peer has no reciprocal actor until either side changes channel.
+func (s *Service) publishConfirmedDungeonReturnTownPresence(
+	session *gameSession,
+	characterID uint16,
+	transition currentDungeonTownTransition,
+	source string,
+) error {
+	if s == nil || s.onlinePlayers == nil || session == nil || characterID == 0 {
+		return nil
+	}
+	if transition.ActorObjectKey == 0 {
+		return fmt.Errorf("confirmed dungeon return town transition is unavailable for character %d", characterID)
+	}
+	repositories, ok := s.repositoryGroup()
+	if !ok || repositories.Character == nil {
+		return fmt.Errorf("confirmed dungeon return character repository is unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), createWriteTimeout)
+	defer cancel()
+	characterKey := strconv.FormatUint(uint64(characterID), 10)
+	character, found, err := repositories.Character.Load(ctx, characterKey)
+	if err != nil {
+		return fmt.Errorf("load confirmed dungeon return character %d: %w", characterID, err)
+	}
+	if !found || character.CharacterID != characterKey {
+		return fmt.Errorf("confirmed dungeon return character %d is unavailable", characterID)
+	}
+	s.publishTownPlayerPresence(&onlinePlayerInfo{
+		CharacterID: characterID,
+		AccountID:   character.AccountID,
+		ChannelID:   session.residentChannel.ID,
+		Name:        character.Name,
+		Job:         byte(numericCharacterStat(character.Job)),
+		GrowType:    byte(numericCharacterStatValue(character, "grow_type")),
+		Level:       byte(character.Level),
+		TownID:      transition.TownID,
+		AreaID:      transition.AreaID,
+		PositionX:   uint16(transition.PositionX),
+		PositionY:   uint16(transition.PositionY),
+		Direction:   transition.Direction,
+		AreaState:   transition.AreaState,
+		Session:     session,
+	}, source+"_confirmed_dungeon_return")
+	return nil
 }
 
 func (s *Service) handleDungeonBackToVillage(session *gameSession, body []byte) error {
@@ -126,6 +176,7 @@ func (s *Service) handleDungeonBackToVillage(session *gameSession, body []byte) 
 		resetDungeonReturnSceneGates(session)
 		session.returnTownFinishLoadingAckOnly = true
 		session.confirmedDungeonReturnStatePending = true
+		session.confirmedDungeonReturnTransition = cloneCurrentDungeonTownTransition(transition)
 		markBackToVillageEnterSelectPending(session)
 		s.logGameEvent(session, "game-dungeon-select-back-to-village-committed",
 			"char_id", session.selectedCharacterID,
@@ -141,6 +192,7 @@ func (s *Service) handleDungeonBackToVillage(session *gameSession, body []byte) 
 	defer session.dungeon.mu.Unlock()
 	if runtime.townReturnPending {
 		session.confirmedDungeonReturnStatePending = false
+		session.confirmedDungeonReturnTransition = currentDungeonTownTransition{}
 		resetCurrentDungeonReturnAttempt(runtime)
 		s.logGameEvent(session, "game-dungeon-back-to-village-retry",
 			"char_id", session.selectedCharacterID,
@@ -433,6 +485,7 @@ func (s *Service) sendCurrentDungeonReturnToTownLocked(
 		}
 		runtime.townReturnOp24Sent = true
 		session.confirmedDungeonReturnStatePending = true
+		session.confirmedDungeonReturnTransition = cloneCurrentDungeonTownTransition(transition)
 		markBackToVillageEnterSelectPending(session)
 	}
 	s.logGameEvent(session, "game-dungeon-back-to-village-pending",
@@ -641,6 +694,7 @@ func (s *Service) cancelCurrentDungeonReturnAfterDungeonEvidenceLocked(
 	transition := runtime.townReturnTransition
 	resetCurrentDungeonReturnAttempt(runtime)
 	session.confirmedDungeonReturnStatePending = false
+	session.confirmedDungeonReturnTransition = currentDungeonTownTransition{}
 	s.logGameEvent(session, "game-dungeon-back-to-village-cancelled",
 		"char_id", session.selectedCharacterID,
 		"request_msg_id", requestMsgID,
@@ -687,12 +741,14 @@ func (s *Service) commitPendingDungeonReturnForSceneRequest(session *gameSession
 	}
 	s.cancelCurrentDungeonDeathReturnLocked(session, runtime, "town_scene_transition_committed")
 	s.cancelCurrentDungeonCardAutoFlipLocked(session, runtime, "town_scene_transition_committed")
+	transition := cloneCurrentDungeonTownTransition(runtime.townReturnTransition)
 	session.dungeon.runtime = nil
 	resetDungeonReturnSceneGates(session)
 	session.returnTownFinishLoadingAckOnly = true
 	session.confirmedDungeonReturnStatePending = true
-	townID := runtime.townReturnTransition.TownID
-	areaID := runtime.townReturnTransition.AreaID
+	session.confirmedDungeonReturnTransition = transition
+	townID := transition.TownID
+	areaID := transition.AreaID
 	session.dungeon.mu.Unlock()
 	s.logGameEvent(session, "game-dungeon-back-to-village-committed",
 		"char_id", session.selectedCharacterID,
@@ -724,6 +780,7 @@ func (s *Service) ensureCurrentConfirmedDungeonReturnPlayerState(
 	}
 	session.dungeon.mu.Lock()
 	pending := session.confirmedDungeonReturnStatePending
+	transition := cloneCurrentDungeonTownTransition(session.confirmedDungeonReturnTransition)
 	session.dungeon.mu.Unlock()
 	if !pending {
 		return nil
@@ -770,12 +827,21 @@ func (s *Service) ensureCurrentConfirmedDungeonReturnPlayerState(
 
 	session.townMu.Lock()
 	if session.selectedCharacterID == characterID {
+		setCurrentTownPositionSceneLocked(session, characterID, transition.TownID, transition.AreaID)
+		session.townPositionSnapshot.PositionX = uint16(transition.PositionX)
+		session.townPositionSnapshot.PositionY = uint16(transition.PositionY)
+		session.townPositionSnapshot.MovementCode = transition.Direction
+		session.townPositionSnapshot.PositionValid = true
 		session.townSceneReadyCharacterID = characterID
 	}
 	session.townMu.Unlock()
+	if err := s.publishConfirmedDungeonReturnTownPresence(session, characterID, transition, source); err != nil {
+		return err
+	}
 	session.dungeon.mu.Lock()
 	if session.selectedCharacterID == characterID {
 		session.confirmedDungeonReturnStatePending = false
+		session.confirmedDungeonReturnTransition = currentDungeonTownTransition{}
 	}
 	session.dungeon.mu.Unlock()
 	s.logGameEvent(session, "game-dungeon-back-to-village-player-state-rebuilt",
@@ -808,6 +874,7 @@ func resetDungeonEntrySceneGates(session *gameSession) {
 	}
 	session.dungeon.mu.Lock()
 	session.confirmedDungeonReturnStatePending = false
+	session.confirmedDungeonReturnTransition = currentDungeonTownTransition{}
 	session.dungeon.mu.Unlock()
 	session.townMu.Lock()
 	resetCurrentTownPostTransitionPlayerState(session)
