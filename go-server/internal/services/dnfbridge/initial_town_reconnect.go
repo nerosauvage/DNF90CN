@@ -122,6 +122,23 @@ func (s *Service) sendCurrentChannelReconnectTownEntry(session *gameSession) err
 	routeStage := session.initialTownRouteStage
 	questSnapshotsSeeded := session.initialTownQuestSnapshotsSent
 	session.townMu.Unlock()
+	if routeStage >= currentInitialTownRouteTransitionSent {
+		s.publishTownPlayerPresence(&onlinePlayerInfo{
+			CharacterID: characterID,
+			AccountID:   character.AccountID,
+			Name:        character.Name,
+			Job:         byte(numericCharacterStat(character.Job)),
+			GrowType:    byte(numericCharacterStatValue(character, "grow_type")),
+			Level:       byte(character.Level),
+			TownID:      townID,
+			AreaID:      areaID,
+			PositionX:   row.Value1,
+			PositionY:   row.Value2,
+			Direction:   row.Value3,
+			AreaState:   row.Value4,
+			Session:     session,
+		}, "channel_reconnect_town_route")
+	}
 
 	// The pre-op24 pair seeds the task manual while the actor is being rebuilt.
 	// Refresh it once more after the actor-ready boundary so NPC markers reflect

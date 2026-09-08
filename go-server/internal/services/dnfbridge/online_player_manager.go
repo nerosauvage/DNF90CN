@@ -504,6 +504,29 @@ func (s *Service) broadcastTownPlayerEnter(newPlayer *onlinePlayerInfo, others [
 	}
 }
 
+// publishTownPlayerPresence commits a player to the authoritative town-area
+// registry after its own op24 transition has completed, then installs remote
+// actors in both directions. Initial login and channel reconnect must use the
+// same boundary as SET_USER_AREA; otherwise the player remains invisible until
+// a later channel/area change happens to publish it.
+func (s *Service) publishTownPlayerPresence(player *onlinePlayerInfo, source string) []onlinePlayerInfo {
+	if s == nil || s.onlinePlayers == nil || player == nil ||
+		player.CharacterID == 0 || player.Session == nil {
+		return nil
+	}
+	others := s.onlinePlayers.EnterArea(player)
+	s.promoteResidentGameSession(player.Session, player.CharacterID)
+	s.broadcastTownPlayerEnter(player, others)
+	s.replayCurrentExpertJobStores(player.Session, player.TownID, player.AreaID)
+	s.logGameEvent(player.Session, "game-town-presence-published",
+		"source", source,
+		"char_id", player.CharacterID,
+		"town_id", player.TownID,
+		"area_id", player.AreaID,
+		"peer_count", len(others))
+	return others
+}
+
 // sendTownRemotePartyActors restores party members that are online in another
 // town area after SET_USER_AREA rebuilt the receiving client's actor manager.
 // Current sub_1D64CA0's same-owner party rows contain only user ids, so every

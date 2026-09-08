@@ -180,6 +180,7 @@ go-server/internal/services/dnfbridge/scene_finish_loading_test.go
 | 125a469 | 创建第一个角色后，非空列表之后的立即选角仍可能走旧重连分支；登录步骤繁琐、旧 EXE 不自动更新 | sendCreateSuccess 清理三类陈旧状态；重做原生登录器和 LOGIN.bat 版本刷新流程 | TestFirstCreatedCharacterClearsSpeculativeReconnectBeforeSelection；launcher/control/release 测试 |
 | 当前基线 | 首角色场景中 op3 早于房间对象管理器会崩溃/掉线 | 普通场景把对象放置置于用户状态；教程场景延后到 finish-loading | dungeon_entry_packets_test.go、scene_finish_loading_test.go 及场景时序测试 |
 | 2026-09-08 源码待真机验收 | A 邀请 B 后 B 反成队长；一端显示两名队员、另一端只显示自己；随后进图状态分裂并掉线 | 邀请绑定 inviter 的非零中央 party generation；接受时校验原 party id/leader；选图和 op16 前重放权威 roster，非队长 op16 拒绝 | game_aligned_test.go、party_manager_runtime_test.go 已补回归源码；按要求未在本机执行测试 |
+| 2026-09-08 源码待真机验收 | A、B 同频道同城镇但首次进入互相不可见，任一方重选频道后才恢复 | 首次进城和频道重连在自身 op24 完成后登记在线区域，并向新旧双方依次投影 mode0/mode1/op9/op23；SET_USER_AREA 复用同一发布入口 | online_player_manager_test.go 已补双向与单人回归源码；按要求未在本机执行测试 |
 
 其他玩法修复（任务、背包/装备、PVF 掉落、副本、活动等）以 changlog.md 顶部条目和各模块测试为准；不要根据旧归档或旧二进制推断当前行为。
 

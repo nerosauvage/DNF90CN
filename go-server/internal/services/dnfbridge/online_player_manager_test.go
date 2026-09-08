@@ -102,7 +102,7 @@ func TestCurrentTownRemoteActorOwnerContextUsesCommittedTownChannel(t *testing.T
 	}
 }
 
-func TestBroadcastTownPlayerEnterCreatesRepositoryBackedRemoteActorsBeforePeerState(t *testing.T) {
+func TestPublishTownPlayerPresenceRegistersAndCreatesRemoteActorsBothDirections(t *testing.T) {
 	repositories := dnfrepomemory.NewMemoryGroup()
 	for _, character := range []dnfrepo.CharacterRecord{
 		{
@@ -184,8 +184,18 @@ func TestBroadcastTownPlayerEnterCreatesRepositoryBackedRemoteActorsBeforePeerSt
 	}
 	service.bindGameSessionCharacter(existingSession, 17)
 	service.bindGameSessionCharacter(newcomerSession, 23)
+	service.onlinePlayers.EnterArea(&existing)
 
-	service.broadcastTownPlayerEnter(newcomer, []onlinePlayerInfo{existing})
+	peers := service.publishTownPlayerPresence(newcomer, "initial_town_route_test")
+	if len(peers) != 1 || peers[0].CharacterID != existing.CharacterID {
+		t.Fatalf("published peers = %+v, want existing character %d", peers, existing.CharacterID)
+	}
+	if !service.onlinePlayers.PeerInSameArea(existing.CharacterID, newcomer.CharacterID) {
+		t.Fatal("published characters were not registered in the same town area")
+	}
+	if got := service.onlinePlayers.SessionForCharacter(newcomer.CharacterID); got != newcomerSession {
+		t.Fatalf("newcomer resident session = %p, want %p", got, newcomerSession)
+	}
 
 	assertTownRemoteActorSequence(
 		t,
@@ -201,7 +211,7 @@ func TestBroadcastTownPlayerEnterCreatesRepositoryBackedRemoteActorsBeforePeerSt
 	)
 }
 
-func TestBroadcastTownPlayerEnterDoesNotReplaySoloSelfTownTransition(t *testing.T) {
+func TestPublishTownPlayerPresenceDoesNotReplaySoloSelfTownTransition(t *testing.T) {
 	connection := &bufferConn{}
 	session := &gameSession{
 		conn:                connection,
@@ -220,10 +230,13 @@ func TestBroadcastTownPlayerEnterDoesNotReplaySoloSelfTownTransition(t *testing.
 		AreaState:   3,
 		Session:     session,
 	}
-	service.broadcastTownPlayerEnter(newcomer, nil)
+	service.publishTownPlayerPresence(newcomer, "initial_town_route_test")
 
 	if got := connection.write.Bytes(); len(got) != 0 {
 		t.Fatalf("solo co-presence replayed town transition: %x", got)
+	}
+	if got := service.onlinePlayers.SessionForCharacter(newcomer.CharacterID); got != session {
+		t.Fatalf("solo resident session = %p, want %p", got, session)
 	}
 }
 

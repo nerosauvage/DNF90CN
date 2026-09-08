@@ -331,12 +331,9 @@ func (s *Service) handleTownSetUserArea(session *gameSession, body []byte) error
 		if len(oldOthers) > 0 {
 			s.broadcastTownPlayerAreaChange(playerInfo, oldOthers, partyStateBeforeTownMove)
 		}
-		// Enter new area.
-		newOthers := s.onlinePlayers.EnterArea(playerInfo)
+		// Enter the new area through the shared post-op24 publication boundary.
+		newOthers := s.publishTownPlayerPresence(playerInfo, "set_user_area")
 		newAreaOthers = append(newAreaOthers, newOthers...)
-		s.promoteResidentGameSession(session, characterID)
-		s.broadcastTownPlayerEnter(playerInfo, newOthers)
-		s.replayCurrentExpertJobStores(session, request.TownID, request.AreaID)
 	}
 	// SET_USER_AREA rebuilds the current EXE's scene-owned party manager. Peer
 	// actor projections alone are not sufficient: whichever member crosses the

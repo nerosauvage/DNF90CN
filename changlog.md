@@ -1,5 +1,12 @@
 # DNF90 Operation Log
 
+## 2026-09-08 - publish initial town co-presence at the op24 boundary
+
+- Two clients could select the same channel and stand in the same town area without seeing each other; reselecting a channel made them visible. The channel change path already registered the player in `OnlinePlayerManager` and installed repository-backed remote actors in both directions, while first town entry and channel reconnect completed the local op24 transition without ever publishing that presence.
+- Added one shared post-op24 town-presence publication boundary. Initial character-list town entry and channel reconnect now register the selected character, promote the resident socket, install mode0/mode1/op9/op23 remote state in both directions, and replay town-scoped expert stores. `SET_USER_AREA` uses the same helper so these entry paths cannot drift again.
+- The source regression now starts with one registered resident, publishes a newcomer, requires both characters to be registered in the same area, and checks both clients receive the other actor in the proved order. The solo case also requires registration without any self-transition replay.
+- `deploy/windows/runtime.version` is now `2026.09.08.2`. Per request this remains a source-only blind repair: no Go tests, server launch, client launch, database operation, or two-client acceptance test was performed on this machine.
+
 ## 2026-09-08 - bind party invitations and dungeon entry to one authority
 
 - The reported two-client captures show three facets of the same split-brain party state: the acceptor becomes leader even though the other character sent the invitation, one client renders two party rows while the other renders only itself, and the two clients later enter mismatched dungeon states before both disconnect. This is a party authority/synchronization failure, not evidence of a MySQL performance problem.

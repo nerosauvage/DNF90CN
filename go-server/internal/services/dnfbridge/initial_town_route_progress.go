@@ -254,6 +254,21 @@ func (s *Service) sendCurrentInitialTownRoute(
 	if requireReturnSelectReentry {
 		session.returnSelectTownReentryPending = false
 	}
+	s.publishTownPlayerPresence(&onlinePlayerInfo{
+		CharacterID: characterID,
+		AccountID:   character.AccountID,
+		Name:        character.Name,
+		Job:         byte(numericCharacterStat(character.Job)),
+		GrowType:    byte(numericCharacterStatValue(character, "grow_type")),
+		Level:       byte(character.Level),
+		TownID:      townID,
+		AreaID:      areaID,
+		PositionX:   row.Value1,
+		PositionY:   row.Value2,
+		Direction:   row.Value3,
+		AreaState:   row.Value4,
+		Session:     session,
+	}, "initial_town_route")
 
 	s.logGameEvent(session, "game-initial-town-route-transition-sent",
 		"char_id", characterID,
