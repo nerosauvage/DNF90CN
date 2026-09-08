@@ -1,5 +1,13 @@
 # DNF90 Operation Log
 
+## 2026-09-08 - bind party invitations and dungeon entry to one authority
+
+- The reported two-client captures show three facets of the same split-brain party state: the acceptor becomes leader even though the other character sent the invitation, one client renders two party rows while the other renders only itself, and the two clients later enter mismatched dungeon states before both disconnect. This is a party authority/synchronization failure, not evidence of a MySQL performance problem.
+- The existing accept path tried to prefer the invitation target, but an invitation sent while the inviter had no central party still recorded party id `0`, and the response path explicitly discarded the recorded party id. A party invite now creates or resolves a hidden authoritative inviter lobby before forwarding the prompt, records that exact party generation, and accepts only while the same inviter still leads that same generation. A transient acceptor-side op12 singleton can no longer become the accepted party's authority.
+- Party snapshot fan-out now attempts every live member and joins any delivery errors instead of returning after the first failed socket. Selector entry refreshes the initiator and passive member rosters from the central manager, including when the selector was already open, and leader op16 rejects a non-leader requester rather than silently entering it as a solo run. Dungeon preflight also replaces stale per-session membership caches with the authoritative snapshot before comparing members.
+- Added source regressions for a quick invite allocating a nonzero hidden inviter party, an acceptor with a transient self-led party retaining the inviter as leader and slot zero, and a response bound to the wrong party generation leaving membership untouched.
+- `deploy/windows/runtime.version` is now `2026.09.08.1` because `dnfbridge` party and dungeon-entry behaviour changed. Per request this is a source-only blind repair: no Go tests, server launch, client launch, DLL rebuild, database migration, or two-client acceptance test was performed on this machine.
+
 ## 2026-08-18 - bound the dungeon pickup writes that could freeze a run
 
 - Live play reported three symptoms: picking an item up lagged, sometimes needed several attempts, and after a boss died the run occasionally never settled -- the end-run button and the return-to-town button both did nothing and the client had to be killed. The reporter also noted it worsened the longer a session ran.

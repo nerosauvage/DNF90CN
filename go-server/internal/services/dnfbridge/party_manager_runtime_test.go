@@ -93,6 +93,34 @@ func TestManagedPartyInviteTargetKeepsLeadershipOverAcceptorTransientSetPartyInf
 	}
 }
 
+func TestManagedPartyInviteRejectsDifferentPartyGeneration(t *testing.T) {
+	service := &Service{options: options{gameUpperBodyCodec: gameUpperBodyCodecPlain}}
+	channel := channelcatalog.Channel{ID: 38, Type: 1, Name: "ch.38", Port: 10038}
+	inviter := &gameSession{conn: &bufferConn{}, channel: channel, selectedCharacterID: 1001}
+	acceptor := &gameSession{conn: &bufferConn{}, channel: channel, selectedCharacterID: 1002}
+	service.bindGameSessionCharacter(inviter, 1001)
+	service.bindGameSessionCharacter(acceptor, 1002)
+
+	inviteParty, reason, ready := service.prepareManagedRuntimePartyInviteSource(inviter)
+	if !ready {
+		t.Fatalf("prepare inviter party: %s", reason)
+	}
+	wrongPartyID := inviteParty.ID + 1
+	if wrongPartyID == 0 {
+		wrongPartyID = 1
+	}
+	state, result, joined := service.createOrJoinManagedRuntimePartyForInvite(acceptor, inviter, wrongPartyID)
+	if joined || result.Reason != "stale_invite_party_generation" || state.PartyID != 0 {
+		t.Fatalf("stale invite joined=%t result=%+v state=%+v", joined, result, state)
+	}
+	if _, found := service.runtimePartyManagerForService().SnapshotByUser(1002, acceptor.characterGeneration); found {
+		t.Fatal("stale invitation mutated acceptor membership")
+	}
+	if current, found := service.runtimePartyManagerForService().SnapshotByID(inviteParty.ID); !found || current.Leader != 1001 || len(current.Members) != 1 {
+		t.Fatalf("inviter party changed after stale invite: %+v found=%t", current, found)
+	}
+}
+
 func TestManagedPartyReconnectRebindsMemberGeneration(t *testing.T) {
 	service := &Service{options: options{gameUpperBodyCodec: gameUpperBodyCodecPlain}}
 	channel := channelcatalog.Channel{ID: 38, Type: 1, Name: "ch.38", Port: 10038}

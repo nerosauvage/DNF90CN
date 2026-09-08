@@ -1,6 +1,7 @@
 package dnfbridge
 
 import (
+	"errors"
 	"fmt"
 
 	"longheng.io/server/internal/modules/dnf/alignedcmd"
@@ -74,7 +75,89 @@ func (s *Service) clearRuntimePartyProjection(userID uint16, generation uint64) 
 	storeRuntimePartyState(identity.session, alignedcmd.PartyState{})
 }
 
+// prepareManagedRuntimePartyInviteSource binds an invitation to the exact
+// authoritative party generation owned by the inviter. A partyless inviter
+// receives a hidden one-member manager lobby here; it is not projected to the
+// client until another member actually joins.
+func (s *Service) prepareManagedRuntimePartyInviteSource(session *gameSession) (party.RuntimePartySnapshot, string, bool) {
+	identity, bound := s.boundGameSessionCharacterSnapshot(session)
+	if !bound {
+		return party.RuntimePartySnapshot{}, "inviter_session_unbound", false
+	}
+	manager := s.runtimePartyManagerForService()
+	if manager == nil {
+		return party.RuntimePartySnapshot{}, "party_manager_unavailable", false
+	}
+	if snapshot, found := manager.SnapshotByUser(identity.character, identity.generation); found {
+		if snapshot.Leader != identity.character {
+			return party.RuntimePartySnapshot{}, "inviter_not_party_leader", false
+		}
+		return snapshot, "", true
+	}
+	if runtimePartyStateSnapshot(session).PartyID > 0 {
+		if snapshot, found := s.bootstrapManagedRuntimePartyForSession(session); found {
+			if snapshot.Leader != identity.character {
+				return party.RuntimePartySnapshot{}, "inviter_not_party_leader", false
+			}
+			return snapshot, "", true
+		}
+	}
+	member, ok := s.runtimePartyMemberForIdentity(identity)
+	if !ok {
+		return party.RuntimePartySnapshot{}, "inviter_session_stale", false
+	}
+	created := manager.EnsureLeader(member, runtimePartyStateSnapshot(session))
+	if !created.OK || created.Party.ID == 0 || created.Party.Leader != identity.character {
+		reason := created.Reason
+		if reason == "" {
+			reason = "inviter_party_generation_unavailable"
+		}
+		return party.RuntimePartySnapshot{}, reason, false
+	}
+	return created.Party, "", true
+}
+
+// authoritativeRuntimePartyStateForSession refreshes a session-local client
+// cache from the central membership graph. One-member lobbies remain hidden so
+// they cannot accidentally grant party-leader dungeon semantics to a solo run.
+func (s *Service) authoritativeRuntimePartyStateForSession(session *gameSession) (alignedcmd.PartyState, bool) {
+	identity, bound := s.boundGameSessionCharacterSnapshot(session)
+	if !bound {
+		return alignedcmd.PartyState{}, false
+	}
+	manager := s.runtimePartyManagerForService()
+	if manager == nil {
+		return alignedcmd.PartyState{}, false
+	}
+	snapshot, found := manager.SnapshotByUser(identity.character, identity.generation)
+	if !found && runtimePartyStateSnapshot(session).PartyID > 0 {
+		snapshot, found = s.bootstrapManagedRuntimePartyForSession(session)
+	}
+	if !found {
+		return alignedcmd.PartyState{}, false
+	}
+	if len(snapshot.Members) <= 1 {
+		s.clearRuntimePartyProjection(identity.character, identity.generation)
+		return alignedcmd.PartyState{}, true
+	}
+	state := snapshot.StateFor(identity.character)
+	storeRuntimePartyState(session, state)
+	return state, true
+}
+
 func (s *Service) createOrJoinManagedRuntimeParty(joiner, anchor *gameSession) (alignedcmd.PartyState, party.RuntimePartyResult, bool) {
+	return s.createOrJoinManagedRuntimePartyConstrained(joiner, anchor, 0, false)
+}
+
+func (s *Service) createOrJoinManagedRuntimePartyForInvite(joiner, anchor *gameSession, invitePartyID uint16) (alignedcmd.PartyState, party.RuntimePartyResult, bool) {
+	return s.createOrJoinManagedRuntimePartyConstrained(joiner, anchor, invitePartyID, true)
+}
+
+func (s *Service) createOrJoinManagedRuntimePartyConstrained(
+	joiner, anchor *gameSession,
+	expectedPartyID uint16,
+	requireAnchorLeader bool,
+) (alignedcmd.PartyState, party.RuntimePartyResult, bool) {
 	joinerIdentity, joinerOK := s.boundGameSessionCharacterSnapshot(joiner)
 	anchorIdentity, anchorOK := s.boundGameSessionCharacterSnapshot(anchor)
 	if !joinerOK || !anchorOK || joinerIdentity.character == anchorIdentity.character {
@@ -94,6 +177,12 @@ func (s *Service) createOrJoinManagedRuntimeParty(joiner, anchor *gameSession) (
 	// it does not yet own one. A joiner's old central party is then detached by
 	// RuntimePartyManager.Join as one atomic transition.
 	anchorParty, anchorFound := s.bootstrapManagedRuntimePartyForSession(anchor)
+	if expectedPartyID != 0 && (!anchorFound || anchorParty.ID != expectedPartyID) {
+		return alignedcmd.PartyState{}, party.RuntimePartyResult{Reason: "stale_invite_party_generation"}, false
+	}
+	if requireAnchorLeader && anchorFound && anchorParty.Leader != anchorIdentity.character {
+		return alignedcmd.PartyState{}, party.RuntimePartyResult{Reason: "invite_anchor_not_leader"}, false
+	}
 	var result party.RuntimePartyResult
 	if anchorFound {
 		// Import a pre-central joiner's legacy projection only after the target
@@ -114,6 +203,9 @@ func (s *Service) createOrJoinManagedRuntimeParty(joiner, anchor *gameSession) (
 		if !created.OK {
 			return alignedcmd.PartyState{}, created, false
 		}
+		if requireAnchorLeader && created.Party.Leader != anchorIdentity.character {
+			return alignedcmd.PartyState{}, party.RuntimePartyResult{Reason: "invite_anchor_not_leader"}, false
+		}
 		result = manager.Join(created.Party.ID, joinerMember)
 		if result.PriorLeave == nil && created.PriorLeave != nil {
 			result.PriorLeave = created.PriorLeave
@@ -121,6 +213,12 @@ func (s *Service) createOrJoinManagedRuntimeParty(joiner, anchor *gameSession) (
 	}
 	if !result.OK {
 		return alignedcmd.PartyState{}, result, false
+	}
+	if expectedPartyID != 0 && result.Party.ID != expectedPartyID {
+		return alignedcmd.PartyState{}, party.RuntimePartyResult{Reason: "stale_invite_party_generation"}, false
+	}
+	if requireAnchorLeader && result.Party.Leader != anchorIdentity.character {
+		return alignedcmd.PartyState{}, party.RuntimePartyResult{Reason: "invite_anchor_not_leader"}, false
 	}
 	if err := s.reconcileManagedPriorPartyLeave(result.PriorLeave, joinerIdentity.character); err != nil {
 		result.Reason = "prior_party_projection_failed: " + err.Error()
@@ -384,14 +482,15 @@ func (s *Service) sendManagedRuntimePartySnapshots(state alignedcmd.PartyState) 
 	if !found {
 		return fmt.Errorf("runtime party %d is no longer current", state.PartyID)
 	}
+	var sendErr error
 	for _, member := range snapshot.Members {
 		identity, online := s.onlineGameSessionCharacterSnapshot(member.UserID)
 		if !online || identity.generation != member.SessionGeneration {
 			continue
 		}
 		if err := s.sendRuntimePartySnapshot(identity.session, snapshot.StateFor(member.UserID)); err != nil {
-			return err
+			sendErr = errors.Join(sendErr, fmt.Errorf("send runtime party %d snapshot to member %d: %w", snapshot.ID, member.UserID, err))
 		}
 	}
-	return nil
+	return sendErr
 }

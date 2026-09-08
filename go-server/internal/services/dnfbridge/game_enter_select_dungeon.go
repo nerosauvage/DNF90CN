@@ -159,9 +159,29 @@ func (s *Service) synchronizeRuntimePartyMembersEnterSelect(initiator *gameSessi
 	if initiator == nil || initiator.selectedCharacterID == 0 || s.onlinePlayers == nil {
 		return nil
 	}
-	state := runtimePartyStateSnapshot(initiator)
+	state, authoritative := s.authoritativeRuntimePartyStateForSession(initiator)
+	if !authoritative {
+		if cached := runtimePartyStateSnapshot(initiator); cached.PartyID > 0 {
+			s.logGameEvent(initiator, "game-party-enter-select-synchronization-deferred",
+				"source", source,
+				"char_id", initiator.selectedCharacterID,
+				"cached_party_id", cached.PartyID,
+				"reason", "authoritative_party_membership_unavailable")
+		}
+		return nil
+	}
 	if state.PartyID <= 0 || state.UserID == 0 {
 		return nil
+	}
+	// Opening the selector rebuilds scene ownership. Re-send the canonical
+	// roster to the initiator as well as passive members so an earlier partial
+	// snapshot cannot leave only one client with both party rows.
+	if err := s.sendRuntimePartyRosterLocal(
+		initiator,
+		state,
+		source+"_initiator_roster_rebind",
+	); err != nil {
+		return err
 	}
 	for _, member := range runtimePartyMembers(state) {
 		if member.UserID == 0 || member.UserID == initiator.selectedCharacterID ||
@@ -170,10 +190,6 @@ func (s *Service) synchronizeRuntimePartyMembersEnterSelect(initiator *gameSessi
 		}
 		follower, ok := s.onlineGameSession(member.UserID)
 		if !ok || follower == initiator {
-			continue
-		}
-		followerState := runtimePartyStateSnapshot(follower)
-		if followerState.PartyID != state.PartyID || followerState.UserID != state.UserID {
 			continue
 		}
 		fanoutCtx, cancel := context.WithTimeout(context.Background(), createWriteTimeout)
@@ -209,7 +225,31 @@ func (s *Service) prepareRuntimePartyFollowerEnterSelect(
 	if follower == nil || follower.selectedCharacterID == 0 {
 		return false, nil
 	}
+	partyState, authoritative := s.authoritativeRuntimePartyStateForSession(follower)
+	if !authoritative || partyState.PartyID != partyID || partyState.UserID != leaderCharacterID {
+		s.logGameEvent(follower, "game-party-enter-select-follower-deferred",
+			"source", source,
+			"leader_char_id", leaderCharacterID,
+			"party_id", partyID,
+			"reason", "authoritative_party_membership_mismatch")
+		return false, nil
+	}
 	if follower.enterSelectDungeonContextSent && follower.enterSelectDungeonSent {
+		// The selector flags only prove that the page is open. They do not prove
+		// that this client's local party table survived its last actor rebuild.
+		// Rebind the canonical roster before the leader fans out op16.
+		if err := s.sendRuntimePartyRosterLocal(
+			follower,
+			partyState,
+			source+"_existing_selector_roster_rebind",
+		); err != nil {
+			return false, err
+		}
+		s.logGameEvent(follower, "game-party-enter-select-follower-roster-rebound",
+			"source", source,
+			"leader_char_id", leaderCharacterID,
+			"char_id", follower.selectedCharacterID,
+			"party_id", partyID)
 		return true, nil
 	}
 	ready, reason := s.currentTownEnterSelectReady(follower)
@@ -262,10 +302,6 @@ func (s *Service) prepareRuntimePartyFollowerEnterSelect(
 	}
 	if err := s.sendGameUpperRawClass(follower, uint16(dnfenum.CmdPacketExit), userStateBody, 0); err != nil {
 		return false, err
-	}
-	partyState := runtimePartyStateSnapshot(follower)
-	if partyState.PartyID != partyID || partyState.UserID != leaderCharacterID {
-		return false, nil
 	}
 	// mode0/mode1/op3 replace the follower's scene actor owner. Reinstall the
 	// authoritative op9 party roster before opening the selector, while keeping

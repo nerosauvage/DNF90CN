@@ -193,7 +193,19 @@ func (s *Service) handleOnlineRequestPeer(session *gameSession, typ uint16, body
 	invitePartyID := uint16(0)
 	inviteRecorded := false
 	if manager := s.runtimePartyManagerForService(); manager != nil {
-		if snapshot, found := manager.SnapshotByUser(sourceIdentity.character, sourceIdentity.generation); found {
+		if isPartyInviteMode(parsed.Mode) {
+			snapshot, reason, ready := s.prepareManagedRuntimePartyInviteSource(session)
+			if !ready {
+				s.logGameEvent(session, "game-peer-request-invite-deferred",
+					"type", typ,
+					"source_char_id", sourceID,
+					"target_id", parsed.TargetID,
+					"mode", parsed.Mode,
+					"reason", reason)
+				return nil
+			}
+			invitePartyID = snapshot.ID
+		} else if snapshot, found := manager.SnapshotByUser(sourceIdentity.character, sourceIdentity.generation); found {
 			invitePartyID = snapshot.ID
 		}
 		inviteRecorded = manager.RecordInvite(
@@ -599,7 +611,6 @@ func (s *Service) handleOnlineResponsePeer(session *gameSession, typ uint16, bod
 			"mode", parsed.Mode)
 		return nil
 	}
-	_ = invitePartyID // recorded generation is revalidated by create/join below.
 	ackPayload := party.BuildResponsePeerAckPayload(parsed.TargetID, parsed.Mode)
 	if err := s.sendGameUpperSuccess(session, typ, ackPayload); err != nil {
 		return err
@@ -641,7 +652,7 @@ func (s *Service) handleOnlineResponsePeer(session *gameSession, typ uint16, bod
 	}
 	// op8 is emitted by the accepting player, so it joins the invite target's
 	// already-owned party (or creates that target's lobby).
-	state, result, ok := s.createOrJoinManagedRuntimeParty(session, targetSession)
+	state, result, ok := s.createOrJoinManagedRuntimePartyForInvite(session, targetSession, invitePartyID)
 	if !ok {
 		s.logGameEvent(session, "game-party-response-peer-party-full",
 			"type", typ,
@@ -722,7 +733,11 @@ func (s *Service) handleOnlineEntryIntoPartyFinish(session *gameSession, typ uin
 }
 
 func isPartyInviteResponse(req party.ResponsePeerRequest) bool {
-	return req.Mode == 0 || req.Mode == 4 || req.Mode == 12 || req.Mode == 13
+	return isPartyInviteMode(req.Mode)
+}
+
+func isPartyInviteMode(mode byte) bool {
+	return mode == 0 || mode == 4 || mode == 12 || mode == 13
 }
 
 func isForwardedPeerRequestMode(mode byte) bool {

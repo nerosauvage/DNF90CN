@@ -513,14 +513,30 @@ func TestHandleResponsePeerAcceptsOnlinePartyInvite(t *testing.T) {
 		conn:                acceptorConn,
 		channel:             channel,
 		selectedCharacterID: 1002,
+		party: partySessionState{state: alignedcmd.PartyState{
+			PartyID:    1002,
+			UserID:     1002,
+			IsLeader:   true,
+			MaxMembers: 4,
+			Members: []alignedcmd.PartyMemberState{
+				{UserID: 1002, UserState: 1, HPPercent: 100, MPPercent: 100},
+			},
+		}},
 	}
 	service.bindGameSessionCharacter(inviter, 1001)
 	service.bindGameSessionCharacter(acceptor, 1002)
+	if _, err := service.ensureManagedRuntimePartyForSession(acceptor); err != nil {
+		t.Fatalf("bootstrap acceptor transient party: %v", err)
+	}
+	inviteParty, reason, ready := service.prepareManagedRuntimePartyInviteSource(inviter)
+	if !ready {
+		t.Fatalf("prepare inviter party: %s", reason)
+	}
 	inviterIdentity, inviterBound := service.boundGameSessionCharacterSnapshot(inviter)
 	acceptorIdentity, acceptorBound := service.boundGameSessionCharacterSnapshot(acceptor)
 	if !inviterBound || !acceptorBound || !service.runtimePartyManagerForService().RecordInvite(
 		acceptorIdentity.character, acceptorIdentity.generation,
-		inviterIdentity.character, inviterIdentity.generation, 0, 13,
+		inviterIdentity.character, inviterIdentity.generation, inviteParty.ID, 13,
 	) {
 		t.Fatal("could not install a current-session party invite")
 	}
@@ -563,6 +579,18 @@ func TestHandleResponsePeerAcceptsOnlinePartyInvite(t *testing.T) {
 	inviterRest = assertRuntimePartySnapshot(t, inviterRest, 2)
 	if len(inviterRest) != 0 {
 		t.Fatalf("inviter trailing bytes = %d", len(inviterRest))
+	}
+	inviterState := runtimePartyStateSnapshot(inviter)
+	acceptorState := runtimePartyStateSnapshot(acceptor)
+	if inviterState.UserID != 1001 || !inviterState.IsLeader || acceptorState.UserID != 1001 || acceptorState.IsLeader {
+		t.Fatalf("party authority inviter=%+v acceptor=%+v", inviterState, acceptorState)
+	}
+	if members := runtimePartyMembers(acceptorState); len(members) != 2 || members[0].UserID != 1001 || members[1].UserID != 1002 {
+		t.Fatalf("acceptor party order=%+v, want inviter then acceptor", members)
+	}
+	snapshot, found := service.runtimePartyManagerForService().SnapshotByUser(1002, acceptorIdentity.generation)
+	if !found || snapshot.ID != inviteParty.ID || snapshot.Leader != 1001 || len(snapshot.Members) != 2 {
+		t.Fatalf("authoritative party=%+v found=%t", snapshot, found)
 	}
 }
 
@@ -837,11 +865,18 @@ func TestHandleRequestPeerForwardsOnlineQuickPartyInvite(t *testing.T) {
 	if !sourceBound || !targetBound {
 		t.Fatal("invite endpoints were not bound")
 	}
-	if _, pending := service.runtimePartyManagerForService().ConsumeInvite(
+	invitePartyID, pending := service.runtimePartyManagerForService().ConsumeInvite(
 		targetIdentity.character, targetIdentity.generation,
 		sourceIdentity.character, sourceIdentity.generation, 13,
-	); !pending {
-		t.Fatal("central invite was not recorded")
+	)
+	if !pending || invitePartyID == 0 {
+		t.Fatalf("central invite recorded=%t party_id=%d", pending, invitePartyID)
+	}
+	if snapshot, found := service.runtimePartyManagerForService().SnapshotByID(invitePartyID); !found || snapshot.Leader != 1001 || len(snapshot.Members) != 1 {
+		t.Fatalf("hidden inviter party=%+v found=%t", snapshot, found)
+	}
+	if projected := runtimePartyStateSnapshot(source); projected.PartyID != 0 {
+		t.Fatalf("one-member inviter lobby leaked to client projection: %+v", projected)
 	}
 	packet, rest := splitGameServerUpperPacket(t, targetConn.write.Bytes())
 	if len(rest) != 0 {

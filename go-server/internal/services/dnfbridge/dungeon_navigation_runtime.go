@@ -59,6 +59,24 @@ func (s *Service) handleDungeonSelectUpperPlanned(
 		return nil
 	}
 	partyStateAtRequest := runtimePartyStateSnapshot(session)
+	if authoritativePartyState, found := s.authoritativeRuntimePartyStateForSession(session); found {
+		partyStateAtRequest = authoritativePartyState
+	} else if partyStateAtRequest.PartyID > 0 {
+		s.logGameEvent(session, "game-dungeon-select-blocked",
+			"char_id", session.selectedCharacterID,
+			"dungeon_id", request.DungeonID,
+			"reason", "authoritative_party_membership_unavailable")
+		return nil
+	}
+	if partyStateAtRequest.PartyID > 0 && partyStateAtRequest.UserID != session.selectedCharacterID {
+		s.logGameEvent(session, "game-dungeon-select-blocked",
+			"char_id", session.selectedCharacterID,
+			"party_id", partyStateAtRequest.PartyID,
+			"leader_char_id", partyStateAtRequest.UserID,
+			"dungeon_id", request.DungeonID,
+			"reason", "requester_is_not_authoritative_party_leader")
+		return nil
+	}
 	partyMemberIndex, partyMemberIndexed := runtimePartyMemberIndex(session.selectedCharacterID, partyStateAtRequest)
 	s.logGameEvent(session, "game-dungeon-select-request-decoded",
 		"body_len", len(body),
@@ -340,8 +358,8 @@ func (s *Service) prepareRuntimePartyDungeonEntry(
 		if !ok || follower == leader {
 			return nil, fmt.Errorf("party member %d has no resident game session", member.UserID)
 		}
-		followerState := runtimePartyStateSnapshot(follower)
-		if followerState.PartyID != state.PartyID || followerState.UserID != state.UserID {
+		followerState, authoritative := s.authoritativeRuntimePartyStateForSession(follower)
+		if !authoritative || followerState.PartyID != state.PartyID || followerState.UserID != state.UserID {
 			return nil, fmt.Errorf("party member %d has stale party state", member.UserID)
 		}
 		if ready, reason := s.currentTownEnterSelectReady(follower); !ready {
